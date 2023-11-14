@@ -5,186 +5,136 @@ const SERVER_URL = "http://localhost:3001";
 
 const VideoChat = () => {
   const [socket, setSocket] = useState(null);
+  const [localStream, setLocalStream] = useState(null);
+  const localVideoRef = useRef(null);
+  const peerConnections = useRef({});
 
   const [name, setName] = useState("");
   const [room, setRoom] = useState("");
 
-  const [localStream, setLocalStream] = useState(null);
-
-  const localVideoRef = useRef(null);
-  const peerConnections = useRef({});
-  const remoteVideoRefs = useRef({});
+  const joinRoom = () => {
+    if (socket && name !== "" && room !== "") {
+      // 이름과 방 번호가 제대로 입력되었는지 확인
+      socket.emit("join room", { name, room });
+    }
+  };
 
   useEffect(() => {
-    // Socket 연결
     const newSocket = io(SERVER_URL);
     setSocket(newSocket);
+
     newSocket.on("connect", () => {
       console.log("Connected to the signaling server");
     });
-    newSocket.on("message", (message) => {
-      console.log("Message received:", message);
-      // WebRTC 로직을 여기에 구현합니다.
-    });
+
     newSocket.on("connect_error", (err) => {
       console.error("Connection failed:", err);
     });
+
+    return () => newSocket.close();
+  }, []);
+
+  useEffect(() => {
+    if (!socket) return;
 
     const configuration = {
       iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
     };
 
-    // 각 소켓 연결에 대한 PeerConnection 객체 생성
-    socket.on("all users", (users) => {
-      const peers = {};
-      // 기존 사용자들에 대해 PeerConnection 생성 및 오퍼 전송
-      users.forEach((userID) => {
-        const peerConnection = new RTCPeerConnection(configuration);
-        peerConnections.current[userID] = peerConnection;
-
-        // ... 트랙 추가 및 ICE 후보 리스너 설정
-
-        // 오퍼 생성 및 소켓을 통해 전송
-        peerConnection
-          .createOffer()
-          .then((offer) => {
-            return peerConnection.setLocalDescription(offer);
-          })
-          .then(() => {
-            socket.emit("offer", {
-              sdp: peerConnection.localDescription,
-              receiver: userID,
-            });
-          });
-      });
-    });
-
-    // 원격 사용자로부터 오퍼 수신 시 처리 로직
-    socket.on("get offer", (data) => {
-      // ... get offer 처리 로직
-    });
-
-    // 원격 사용자로부터 응답 수신 시 처리 로직
-    socket.on("get answer", (data) => {
-      // ... get answer 처리 로직
-    });
-
-    // 원격 사용자로부터 ICE 후보 수신 시 처리 로직
-    socket.on("get ice-candidate", (data) => {
-      // ... get ice-candidate 처리 로직
-    });
-
-    return () => {
-      // 클린업 로직
-      Object.values(peerConnections.current).forEach((pc) => pc.close());
-      // ... 기타 필요한 클린업 작업
-    };
-  }, []);
-
-  useEffect(() => {
-    // 미디어 스트림을 가져옵니다.
     const getMedia = async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: true,
-        });
+        // 미디어 장치에 대한 제약 조건을 설정합니다.
+        const constraints = {
+          video: true, // 비디오를 사용할 것임
+          audio: true, // 오디오를 사용할 것임
+        };
+
+        // 사용 가능한 미디어 입력 장치를 요청합니다.
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
         setLocalStream(stream);
-        // 로컬 비디오 스트림을 <video> 태그에 연결
-        const videoElement = document.getElementById("local-video");
-        if (videoElement) {
-          videoElement.srcObject = stream;
+
+        // 선택한 스트림을 비디오 태그에 연결합니다.
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
         }
       } catch (error) {
         console.error("Error accessing media devices.", error);
       }
     };
+    const getMediaDevices = async () => {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter(
+          (device) => device.kind === "videoinput"
+        );
+        const audioDevices = devices.filter(
+          (device) => device.kind === "audioinput"
+        );
 
-    getMedia();
-  }, []);
+        // 사용자에게 장치를 선택하게 하고, 선택된 deviceId를 constraints에 사용
+        const constraints = {
+          video: { deviceId: { exact: videoDevices[0].deviceId } }, // 첫 번째 비디오 장치 선택
+          audio: { deviceId: { exact: audioDevices[0].deviceId } }, // 첫 번째 오디오 장치 선택
+        };
 
-  // 방에 입장하기 위해 서버에 'join' 이벤트를 보내는 함수
-  const joinRoom = () => {
-    if (socket) {
-      socket.emit("join", { name, room });
-    }
-  };
-
-  useEffect(() => {
-    // ...socket connection and media stream fetching logic
-
-    // Listen for remote offers
-    socket.on("offer", handleReceiveCall);
-
-    // Listen for remote answer
-    socket.on("answer", handleAnswer);
-
-    // Listen for ICE candidates
-    socket.on("ice-candidate", handleNewICECandidateMsg);
-
-    return () => {
-      // ...clean up
-    };
-  }, []);
-
-  // When user has media stream
-  useEffect(() => {
-    if (localStream) {
-      localVideoRef.current.srcObject = localStream;
-      // Emit event to join room
-      socket.emit("join room", { room, name });
-    }
-  }, [localStream]);
-
-  function handleReceiveCall(incoming) {
-    const peerConnection = new RTCPeerConnection();
-    peerConnections.current[incoming.socketId] = peerConnection;
-
-    // Add each track from local stream to peer connection
-    localStream.getTracks().forEach((track) => {
-      peerConnection.addTrack(track, localStream);
-    });
-
-    // Handle new ICE candidates
-    peerConnection.onicecandidate = (event) => {
-      if (event.candidate) {
-        socket.emit("ice-candidate", {
-          target: incoming.socketId,
-          candidate: event.candidate,
-        });
+        // 선택된 장치로 스트림을 요청합니다.
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        // 스트림 처리 로직...
+      } catch (error) {
+        console.error("Error fetching media devices.", error);
       }
     };
 
-    // Set up remote video stream once tracks are received
-    peerConnection.ontrack = (event) => {
-      // Use remoteVideoRefs to display remote streams
-      // ...
-    };
+    getMediaDevices();
+    getMedia();
 
-    // Create and send an offer to the caller
-    peerConnection
-      .setRemoteDescription(new RTCSessionDescription(incoming.sdp))
-      .then(() => peerConnection.createAnswer())
-      .then((answer) => peerConnection.setLocalDescription(answer))
-      .then(() => {
-        socket.emit("answer", {
-          target: incoming.socketId,
-          sdp: peerConnection.localDescription,
+    socket.on("offer", (data) => {
+      const peerConnection = new RTCPeerConnection(configuration);
+      peerConnections.current[data.socketId] = peerConnection;
+
+      localStream
+        .getTracks()
+        .forEach((track) => peerConnection.addTrack(track, localStream));
+
+      peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+          socket.emit("ice-candidate", {
+            target: data.socketId,
+            candidate: event.candidate,
+          });
+        }
+      };
+
+      peerConnection
+        .setRemoteDescription(new RTCSessionDescription(data.sdp))
+        .then(() => peerConnection.createAnswer())
+        .then((answer) => peerConnection.setLocalDescription(answer))
+        .then(() => {
+          socket.emit("answer", {
+            sdp: peerConnection.localDescription,
+            receiver: data.socketId,
+          });
         });
-      });
-  }
 
-  function handleAnswer(message) {
-    const peerConnection = peerConnections.current[message.socketId];
-    const desc = new RTCSessionDescription(message.sdp);
-    peerConnection.setRemoteDescription(desc).catch((e) => console.log(e));
-  }
+      peerConnection.ontrack = (event) => {
+        // Here you would add the stream to a video tag to display it
+      };
+    });
 
-  function handleNewICECandidateMsg(incoming) {
-    const peerConnection = peerConnections.current[incoming.socketId];
-    const candidate = new RTCIceCandidate(incoming.candidate);
-    peerConnection.addIceCandidate(candidate).catch((e) => console.log(e));
-  }
+    socket.on("answer", (data) => {
+      const peerConnection = peerConnections.current[data.socketId];
+      peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
+    });
+
+    socket.on("ice-candidate", (data) => {
+      const peerConnection = peerConnections.current[data.socketId];
+      peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+    });
+
+    return () => {
+      Object.values(peerConnections.current).forEach((pc) => pc.close());
+    };
+  }, [socket, localStream]);
 
   return (
     <div>
@@ -200,12 +150,10 @@ const VideoChat = () => {
         value={room}
         onChange={(e) => setRoom(e.target.value)}
       />
-      <button onClick={joinRoom}>Join Room</button>
-
-      <video id="local-video" autoPlay muted></video>
-      <div id="remote-videos">
-        {/* 원격 스트림을 표시할 <video> 태그들이 여기에 올 것입니다. */}
-      </div>
+      <button onClick={joinRoom}>Join Room</button>{" "}
+      {/* 버튼 클릭 시 joinRoom 호출 */}
+      <video ref={localVideoRef} autoPlay muted />
+      {/* 원격 비디오 스트림을 표시할 <video> 태그들을 여기에 추가할 수 있습니다. */}
     </div>
   );
 };
